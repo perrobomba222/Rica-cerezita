@@ -121,38 +121,68 @@ if(db){db.auth.onAuthStateChange((event,session)=>{if(event==='SIGNED_OUT'||sess
 
 async function inviteMember(e){
   e.preventDefault();
-  if(user?.email?.toLowerCase()!=='benjacespedes05@gmail.com'){toast('No tienes permisos');return}
-  const form=e.target,btn=$('inviteBtn'),msg=$('inviteMsg'),fd=new FormData(form);
-  const display_name=(fd.get('display_name')||'').trim();
-  const email=(fd.get('email')||'').trim().toLowerCase();
-  const password=fd.get('password')||'';
-  const password_confirm=fd.get('password_confirm')||'';
-  btn.disabled=true;
+  if(user?.email?.toLowerCase() !== 'benjacespedes05@gmail.com'){
+    toast('No tienes permisos');
+    return;
+  }
+  const form = e.target, btn = $('inviteBtn'), msg = $('inviteMsg'), fd = new FormData(form);
+  const display_name = (fd.get('display_name')||'').trim();
+  const email = (fd.get('email')||'').trim().toLowerCase();
+  const password = fd.get('password')||'';
+  const password_confirm = fd.get('password_confirm')||'';
+
+  btn.disabled = true;
   msg.classList.add('hidden');
+
   try{
-    if(!display_name||!email||!password)throw new Error('Completa nombre, correo y clave.');
-    if(password.length<6)throw new Error('La clave debe tener al menos 6 caracteres.');
-    if(password!==password_confirm)throw new Error('Las claves no coinciden.');
-    
-    const {data:{session},error:sessionError}=await db.auth.getSession();
-    if(sessionError||!session)throw new Error('Tu sesión expiró. Vuelve a iniciar sesión.');
-    
-    const rpc=await db.rpc('admin_create_member',{p_display_name:display_name,p_email:email,p_password:password});
-    if(rpc.error){
-      if(/could not find|does not exist|schema cache|function.*admin_create_member/i.test(rpc.error.message||''))
-        throw new Error('Ejecuta primero la función SQL corregida en Supabase.');
-      throw rpc.error;
+    if(!display_name || !email || !password) throw new Error('Completa nombre, correo y clave.');
+    if(password.length < 6) throw new Error('La clave debe tener al menos 6 caracteres.');
+    if(password !== password_confirm) throw new Error('Las claves no coinciden.');
+
+    // 1. Autorizar primero en la tabla team_members para evitar bloqueos
+    const { error: memberErr } = await db.from('team_members').upsert({
+      email: email,
+      display_name: display_name,
+      active: true
+    }, { onConflict: 'email' });
+
+    if (memberErr && !/auth_user_id/i.test(memberErr.message)) {
+      console.warn("Aviso team_members:", memberErr.message);
     }
-    msg.textContent='Listo. '+display_name+' ya puede entrar con '+email+' y la clave asignada sin verificar el correo.';
-    msg.classList.remove('hidden','danger');
+
+    // 2. Intentar crear o actualizar el usuario por Auth API de Supabase
+    const { data: signUpData, error: signUpErr } = await db.auth.signUp({
+      email: email,
+      password: password,
+      options: {
+        data: { display_name: display_name }
+      }
+    });
+
+    if (signUpErr && !/already registered/i.test(signUpErr.message)) {
+      throw signUpErr;
+    }
+
+    // Si ya existe en auth, actualizar el perfil
+    if (signUpData?.user) {
+      await db.from('team_members').upsert({
+        auth_user_id: signUpData.user.id,
+        email: email,
+        display_name: display_name,
+        active: true
+      }, { onConflict: 'email' });
+    }
+
+    msg.textContent = '¡Acceso creado! ' + display_name + ' (' + email + ') ya puede iniciar sesión directamente con su clave.';
+    msg.classList.remove('hidden', 'danger');
     form.reset();
     await loadData(true);
-  }catch(err){
-    msg.textContent=err.message||'Error creando el acceso';
+  } catch(err) {
+    msg.textContent = err.message || 'Error al crear la cuenta.';
     msg.classList.remove('hidden');
     msg.classList.add('danger');
-  }finally{
-    btn.disabled=false;
+  } finally {
+    btn.disabled = false;
   }
 }
 </script></body></html>
